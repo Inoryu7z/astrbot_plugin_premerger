@@ -42,5 +42,11 @@
   "type": "list",
   "default": ["/"],
   "hint": "以这些前缀开头的消息会被识别为指令，不参与合并，直接放行。"
+ },
+ "session_timeout": {
+  "description": "会话超时时间（秒）",
+  "type": "float",
+  "default": 120,
+  "hint": "会话处于 LLM 请求状态的最大等待时间。超时后强制清理，防止僵尸会话导致不回复。"
  }
 }

@@ -1,4 +1,5 @@
 import asyncio
+import time
 import traceback
 from typing import Any, Dict, List
 
@@ -13,7 +14,7 @@ from astrbot.api.star import Context, Star, register
     "astrbot_plugin_premerger",
     "Inoryu7z",
     "用户消息智能合并与中断重试：防抖收集、LLM请求中断重试",
-    "1.3.0",
+    "1.4.0",
 )
 class PremergerPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -34,16 +35,21 @@ class PremergerPlugin(Star):
         if self.max_retry_count < 0:
             logger.warning("[Premerger] max_retry_count 不能为负数，已设置为 0")
             self.max_retry_count = 0
+        self.session_timeout = float(config.get("session_timeout", 120))
+        if self.session_timeout < 1:
+            logger.warning("[Premerger] session_timeout 不能小于 1 秒，已设置为 120")
+            self.session_timeout = 120
         self.command_prefixes = config.get("command_prefixes", ["/"])
 
         self.sessions: Dict[str, Dict[str, Any]] = {}
 
         logger.info(
-            f"[Premerger] v1.3.0 加载 | "
+            f"[Premerger] v1.4.0 加载 | "
             f"防抖: {self.debounce_time}s | "
             f"私聊: {self.enable_private_chat} | "
             f"群聊: {self.enable_group_chat} | "
-            f"最大中断: {self.max_retry_count}"
+            f"最大中断: {self.max_retry_count} | "
+            f"会话超时: {self.session_timeout}s"
         )
 
     @staticmethod
@@ -115,6 +121,26 @@ class PremergerPlugin(Star):
             if task in tasks:
                 tasks.remove(task)
 
+    def _is_session_stuck(self, session: Dict[str, Any]) -> bool:
+        if not session.get("llm_in_progress"):
+            return False
+        llm_start = session.get("llm_start_time", 0)
+        if llm_start and (time.monotonic() - llm_start) > self.session_timeout:
+            return True
+        return False
+
+    def _cleanup_stuck_session(self, uid: str) -> None:
+        logger.warning(
+            f"[Premerger] 用户 {uid} 的会话超时"
+            f"（超过 {self.session_timeout}s），强制清理"
+        )
+        session = self.sessions.get(uid)
+        if session:
+            for task in session.get("background_tasks", []):
+                if not task.done():
+                    task.cancel()
+        self.sessions.pop(uid, None)
+
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1)
     async def handle_message(self, event: AstrMessageEvent):
         if not self.enable:
@@ -146,7 +172,9 @@ class PremergerPlugin(Star):
         if uid in self.sessions:
             session = self.sessions[uid]
 
-            if session.get("llm_in_progress"):
+            if self._is_session_stuck(session):
+                self._cleanup_stuck_session(uid)
+            elif session.get("llm_in_progress"):
                 retry = session.get("retry_count", 0) + 1
 
                 if retry >= self.max_retry_count:
@@ -171,65 +199,71 @@ class PremergerPlugin(Star):
                 event.stop_event()
                 return
 
-            if text.strip():
-                session["buffer"].append(text.strip())
-            if image_urls:
-                session["images"].extend(image_urls)
-            session["event"] = event
-
-            dt = session.get("debounce_task")
-            if dt and not dt.done():
-                dt.cancel()
-
-            session["debounce_task"] = asyncio.create_task(
-                self._debounce_timer(uid)
-            )
-            event.stop_event()
-        else:
-            flush_event = asyncio.Event()
-            debounce_task = asyncio.create_task(
-                self._debounce_timer(uid)
-            )
-            self.sessions[uid] = {
-                "buffer": [text.strip()] if text.strip() else [],
-                "images": image_urls,
-                "event": event,
-                "flush_event": flush_event,
-                "debounce_task": debounce_task,
-                "llm_in_progress": False,
-                "interrupted": False,
-                "retry_count": 0,
-                "background_tasks": [],
-            }
-
-            await flush_event.wait()
-
             if uid not in self.sessions:
+                pass
+            else:
+                if text.strip():
+                    session["buffer"].append(text.strip())
+                if image_urls:
+                    session["images"].extend(image_urls)
+                session["event"] = event
+
+                dt = session.get("debounce_task")
+                if dt and not dt.done():
+                    dt.cancel()
+
+                session["debounce_task"] = asyncio.create_task(
+                    self._debounce_timer(uid)
+                )
+                event.stop_event()
                 return
 
-            session = self.sessions[uid]
-            buffer = session["buffer"]
-            all_images = session["images"]
-            evt = session["event"]
+        flush_event = asyncio.Event()
+        debounce_task = asyncio.create_task(
+            self._debounce_timer(uid)
+        )
+        self.sessions[uid] = {
+            "buffer": [text.strip()] if text.strip() else [],
+            "images": image_urls,
+            "event": event,
+            "flush_event": flush_event,
+            "debounce_task": debounce_task,
+            "llm_in_progress": False,
+            "interrupted": False,
+            "retry_count": 0,
+            "background_tasks": [],
+            "llm_start_time": 0,
+        }
 
-            merged_text = self._merge_buffer(buffer)
-            if not merged_text and not all_images:
-                self.sessions.pop(uid, None)
-                return
+        await flush_event.wait()
 
-            logger.info(
-                f"[Premerger] 防抖结算 - 用户 {uid} | "
-                f"合并消息数: {len(buffer)} | 图片数: {len(all_images)}"
-            )
-
-            session["buffer"] = []
-            session["images"] = []
-            session["llm_in_progress"] = True
-            session["interrupted"] = False
-            session["retry_count"] = 0
-
-            self._reconstruct_event(evt, merged_text, all_images)
+        if uid not in self.sessions:
             return
+
+        session = self.sessions[uid]
+        buffer = session["buffer"]
+        all_images = session["images"]
+        evt = session["event"]
+
+        merged_text = self._merge_buffer(buffer)
+        if not merged_text and not all_images:
+            self.sessions.pop(uid, None)
+            return
+
+        logger.info(
+            f"[Premerger] 防抖结算 - 用户 {uid} | "
+            f"合并消息数: {len(buffer)} | 图片数: {len(all_images)}"
+        )
+
+        session["buffer"] = []
+        session["images"] = []
+        session["llm_in_progress"] = True
+        session["interrupted"] = False
+        session["retry_count"] = 0
+        session["llm_start_time"] = time.monotonic()
+
+        self._reconstruct_event(evt, merged_text, all_images)
+        return
 
     async def _debounce_timer(self, uid: str) -> None:
         try:
@@ -249,6 +283,7 @@ class PremergerPlugin(Star):
             session = self.sessions[uid]
             session["llm_in_progress"] = True
             session["interrupted"] = False
+            session["llm_start_time"] = time.monotonic()
             logger.debug(f"[Premerger] on_llm_request - 用户 {uid} LLM 请求开始")
 
     @filter.on_llm_response()
@@ -264,6 +299,7 @@ class PremergerPlugin(Star):
 
         if not session.get("interrupted"):
             session["llm_in_progress"] = False
+            session["llm_start_time"] = 0
 
             if session.get("buffer") and len(session["buffer"]) > 0:
                 logger.info(
@@ -289,6 +325,7 @@ class PremergerPlugin(Star):
         )
 
         session["llm_in_progress"] = False
+        session["llm_start_time"] = 0
         session["interrupted"] = False
 
         buffer = session["buffer"]

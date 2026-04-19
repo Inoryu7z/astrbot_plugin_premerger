@@ -1,3 +1,13 @@
+### v1.4.0
+
+**🐛 修复僵尸会话导致不回复的严重 bug**
+
+* 新增会话超时机制：当会话处于 `llm_in_progress` 状态超过 `session_timeout`（默认 120 秒）后，强制清理会话。
+* 根因：`on_llm_response` 钩子在某些情况下不会触发（如事件被其他插件终止），导致会话永远卡在 `llm_in_progress = True`，后续所有消息都被当作"中断"处理并被 `stop_event()` 吞掉，形成死锁。
+* 新增 `session_timeout` 配置项，可在管理面板中调整。
+* 新增 `llm_start_time` 字段跟踪 LLM 请求开始时间，用于超时检测。
+* 修复会话超时后被清理后，新消息无法正确创建新会话的问题（`_cleanup_stuck_session` 后继续走新会话逻辑）。
+
 ### v1.3.0
 
 **🐛 修复防抖结算后 session 过早清理导致消息无法合并的严重 bug**
