@@ -13,7 +13,7 @@ from astrbot.api.star import Context, Star, register
     "astrbot_plugin_premerger",
     "Inoryu7z",
     "用户消息智能合并与中断重试：防抖收集、LLM请求中断重试",
-    "1.1.0",
+    "1.1.1",
 )
 class PremergerPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -33,7 +33,7 @@ class PremergerPlugin(Star):
         self.sessions: Dict[str, Dict[str, Any]] = {}
 
         logger.info(
-            f"[Premerger] v1.1.0 加载 | "
+            f"[Premerger] v1.1.1 加载 | "
             f"防抖: {self.debounce_time}s | "
             f"私聊: {self.enable_private_chat} | "
             f"群聊: {self.enable_group_chat} | "
@@ -69,9 +69,12 @@ class PremergerPlugin(Star):
                         )
                         if url:
                             urls.append(url)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[Premerger] 提取图片 URL 失败: {e}")
         return urls
+
+    def _merge_buffer(self, buffer: List[str]) -> str:
+        return self.merge_separator.join(msg for msg in buffer if msg)
 
     def _reconstruct_event(
         self, event: AstrMessageEvent, text: str, image_urls: List[str]
@@ -85,13 +88,13 @@ class PremergerPlugin(Star):
                 chain.append(Image(file=url))
             except TypeError:
                 chain.append(Image(url=url))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"[Premerger] 图片组件添加失败: {url}, 错误: {e}")
         if hasattr(event.message_obj, "message"):
             try:
                 event.message_obj.message = chain
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"[Premerger] 事件消息链更新失败: {e}")
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1)
     async def handle_message(self, event: AstrMessageEvent):
@@ -180,7 +183,7 @@ class PremergerPlugin(Star):
             all_images = session_data["images"]
             evt = session_data["event"]
 
-            merged_text = self.merge_separator.join(msg for msg in buffer if msg)
+            merged_text = self._merge_buffer(buffer)
             if not merged_text and not all_images:
                 return
 
@@ -225,8 +228,23 @@ class PremergerPlugin(Star):
 
         if not session.get("interrupted"):
             session["llm_in_progress"] = False
-            self.sessions.pop(uid, None)
-            logger.debug(f"[Premerger] LLM 响应正常 - 用户 {uid}")
+
+            if session.get("buffer") and len(session["buffer"]) > 0:
+                logger.info(
+                    f"[Premerger] 响应正常但缓冲区有残留消息，发起后续请求 - 用户 {uid}"
+                )
+                buffer = session["buffer"]
+                all_images = session["images"]
+                merged_text = self._merge_buffer(buffer)
+                session["buffer"] = []
+                session["images"] = []
+                session["retry_count"] = 0
+                asyncio.create_task(
+                    self._retry_llm_request(uid, merged_text, all_images, event)
+                )
+            else:
+                self.sessions.pop(uid, None)
+                logger.debug(f"[Premerger] LLM 响应正常 - 用户 {uid}")
             return
 
         logger.info(
@@ -238,14 +256,14 @@ class PremergerPlugin(Star):
 
         if session["retry_count"] >= self.max_retry_count:
             logger.warning(
-                f"[Premerger] 用户 {uid} 已达最大中断次数，放行当前响应"
+                f"[Premerger] 用户 {uid} 已达最大中断次数，放行当前响应，"
+                f"缓冲区 {len(session['buffer'])} 条消息将作为后续请求处理"
             )
-            self.sessions.pop(uid, None)
             return
 
         buffer = session["buffer"]
         all_images = session["images"]
-        merged_text = self.merge_separator.join(msg for msg in buffer if msg)
+        merged_text = self._merge_buffer(buffer)
 
         if not merged_text and not all_images:
             self.sessions.pop(uid, None)
@@ -259,6 +277,10 @@ class PremergerPlugin(Star):
 
         event.stop_event()
 
+        session["buffer"] = []
+        session["images"] = []
+        session["retry_count"] = 0
+
         asyncio.create_task(
             self._retry_llm_request(uid, merged_text, all_images, event)
         )
@@ -271,18 +293,39 @@ class PremergerPlugin(Star):
         original_event: AstrMessageEvent,
     ):
         try:
-            provider_id = await self.context.get_current_chat_provider_id(uid)
-            if not provider_id:
-                logger.error("[Premerger] 无法获取 AI 提供商 ID")
+            provider = self.context.get_using_provider(uid)
+            if not provider:
+                logger.error("[Premerger] 无法获取 AI 提供商")
                 self.sessions.pop(uid, None)
                 return
 
-            llm_resp = await self.context.llm_generate(
-                chat_provider_id=provider_id,
-                prompt=merged_text,
+            system_prompt = ""
+            begin_dialogs: list = []
+            try:
+                persona = await self.context.persona_manager.get_default_persona_v3(
+                    uid
+                )
+                system_prompt = persona.get("prompt", "")
+                begin_dialogs = persona.get("_begin_dialogs_processed", [])
+            except Exception:
+                pass
+
+            contexts = await self._build_contexts(uid, merged_text, begin_dialogs)
+
+            logger.info(
+                f"[Premerger] 重试 LLM 请求 - 用户 {uid} | "
+                f"图片数: {len(image_urls)} | 上下文长度: {len(contexts)}"
             )
 
-            reply_text = (getattr(llm_resp, "completion_text", "") or "").strip()
+            response = await provider.text_chat(
+                prompt=merged_text,
+                contexts=contexts,
+                image_urls=image_urls,
+                func_tool=None,
+                system_prompt=system_prompt,
+            )
+
+            reply_text = (getattr(response, "completion_text", "") or "").strip()
 
             if not reply_text:
                 logger.warning(f"[Premerger] 重试 LLM 返回为空 - 用户 {uid}")
@@ -290,6 +333,8 @@ class PremergerPlugin(Star):
                 return
 
             await original_event.send(original_event.plain_result(reply_text))
+
+            await self._save_conversation(uid, merged_text, reply_text)
 
             self.sessions.pop(uid, None)
             logger.info(f"[Premerger] 中断重试完成 - 用户 {uid}")
@@ -299,6 +344,74 @@ class PremergerPlugin(Star):
                 f"[Premerger] 中断重试失败: {e}\n{traceback.format_exc()}"
             )
             self.sessions.pop(uid, None)
+
+    async def _build_contexts(
+        self, uid: str, current_text: str, begin_dialogs: list
+    ) -> list:
+        contexts: list = []
+
+        try:
+            if begin_dialogs:
+                contexts.extend(begin_dialogs)
+        except Exception:
+            pass
+
+        try:
+            conv_mgr = self.context.conversation_manager
+            curr_cid = await conv_mgr.get_curr_conversation_id(uid)
+
+            if curr_cid:
+                conversation = await conv_mgr.get_conversation(uid, curr_cid)
+                if conversation and hasattr(conversation, "history"):
+                    history = conversation.history
+                    if isinstance(history, str):
+                        import json
+
+                        try:
+                            history = json.loads(history)
+                        except Exception:
+                            history = []
+                    if isinstance(history, list):
+                        for msg in history:
+                            if isinstance(msg, dict):
+                                role = msg.get("role", "")
+                                content = msg.get("content", "")
+                                if role and content:
+                                    contexts.append(
+                                        {"role": role, "content": content}
+                                    )
+        except Exception as e:
+            logger.debug(f"[Premerger] 读取对话历史失败: {e}")
+
+        contexts.append({"role": "user", "content": current_text})
+        return contexts
+
+    async def _save_conversation(
+        self, uid: str, user_text: str, assistant_text: str
+    ):
+        try:
+            from astrbot.core.agent.message import (
+                AssistantMessageSegment,
+                TextPart,
+                UserMessageSegment,
+            )
+
+            conv_mgr = self.context.conversation_manager
+            curr_cid = await conv_mgr.get_curr_conversation_id(uid)
+
+            if curr_cid:
+                user_msg = UserMessageSegment(content=[TextPart(text=user_text)])
+                assistant_msg = AssistantMessageSegment(
+                    content=[TextPart(text=assistant_text)]
+                )
+                await conv_mgr.add_message_pair(
+                    cid=curr_cid,
+                    user_message=user_msg,
+                    assistant_message=assistant_msg,
+                )
+                logger.debug(f"[Premerger] 用户 {uid} 对话历史已保存")
+        except Exception as e:
+            logger.warning(f"[Premerger] 保存对话历史失败: {e}")
 
     async def terminate(self):
         for uid, session in list(self.sessions.items()):
