@@ -1,0 +1,46 @@
+{
+ "enable": {
+  "description": "启用前处理合并器",
+  "type": "bool",
+  "default": true,
+  "hint": "关闭后插件将不会拦截和合并消息。",
+  "obvious_hint": true
+ },
+ "debounce_time": {
+  "description": "防抖等待时间（秒）",
+  "type": "float",
+  "default": 0.5,
+  "hint": "收到消息后等待多久再发起 LLM 请求，期间新消息会重置计时。设为 0 则立即发起请求、不做防抖。",
+  "obvious_hint": true
+ },
+ "merge_separator": {
+  "description": "消息合并分隔符",
+  "type": "string",
+  "default": "\\n",
+  "hint": "多条消息合并时使用的分隔符。\\n 为换行符，也可填空格、句号等。"
+ },
+ "enable_private_chat": {
+  "description": "启用私聊",
+  "type": "bool",
+  "default": true,
+  "hint": "是否在私聊中启用前处理合并器。"
+ },
+ "enable_group_chat": {
+  "description": "启用群聊",
+  "type": "bool",
+  "default": false,
+  "hint": "是否在群聊中启用前处理合并器。群聊中按用户隔离。"
+ },
+ "max_retry_count": {
+  "description": "最大中断重试次数",
+  "type": "int",
+  "default": 5,
+  "hint": "单次对话中最大中断重试次数。达到上限后不再中断，等待当前请求完成。"
+ },
+ "command_prefixes": {
+  "description": "指令前缀列表",
+  "type": "list",
+  "default": ["/"],
+  "hint": "以这些前缀开头的消息会被识别为指令，不参与合并，直接放行。"
+ }
+}
