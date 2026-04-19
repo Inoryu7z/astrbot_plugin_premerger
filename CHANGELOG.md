@@ -1,3 +1,22 @@
+### v2.0.0
+
+**🔄 架构重设计：中断立即重试，不再依赖 on_llm_response 触发**
+
+核心变更：
+
+* 中断时立即启动防抖+重试（`_debounce_then_retry`），不再等待 `on_llm_response` 来触发重试。
+* `on_llm_response` 钩子仅负责丢弃被中断的框架 LLM 响应（`stop_event()`），不再承担重试职责。
+* 新增 `after_message_sent` 钩子，在框架正常发送回复后清理会话，防止僵尸会话。
+
+关键修复：
+
+* 新增 `llm_generation` 代际计数器：每次中断递增，`_direct_llm_call` 完成后检查代际是否匹配。若已被新中断取代，自动丢弃过期响应，避免用户收到多条重复回复。
+* 修复 `_direct_llm_call` 无条件 `sessions.pop()` 导致新中断的 debounce 状态被意外清除的严重 bug。
+* 修复 `retry_count` 在 `_debounce_then_retry` 中被重置为 0 导致永远达不到 `max_retry_count` 上限的 bug。
+* 修复 `on_llm_response` 残余缓冲区处理时未设置 `llm_in_progress = True`，导致新消息走错分支的 bug。
+* 修复 `_direct_llm_call` 完成后若有残余缓冲区消息直接丢失的问题：现在会启动新的 `_debounce_then_retry` 处理残留消息。
+* 移除 `session_timeout` 用户配置项，改为内部安全网 `_ZOMBIE_TIMEOUT = 60` 秒。僵尸会话检测仅作为最后防线，正常流程不应依赖超时清理。
+
 ### v1.4.0
 
 **🐛 修复僵尸会话导致不回复的严重 bug**
