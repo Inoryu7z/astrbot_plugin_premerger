@@ -13,7 +13,7 @@ from astrbot.api.star import Context, Star, register
     "astrbot_plugin_premerger",
     "Inoryu7z",
     "用户消息智能合并与中断重试：防抖收集、LLM请求中断重试",
-    "1.2.0",
+    "1.3.0",
 )
 class PremergerPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -39,7 +39,7 @@ class PremergerPlugin(Star):
         self.sessions: Dict[str, Dict[str, Any]] = {}
 
         logger.info(
-            f"[Premerger] v1.2.0 加载 | "
+            f"[Premerger] v1.3.0 加载 | "
             f"防抖: {self.debounce_time}s | "
             f"私聊: {self.enable_private_chat} | "
             f"群聊: {self.enable_group_chat} | "
@@ -207,19 +207,26 @@ class PremergerPlugin(Star):
             if uid not in self.sessions:
                 return
 
-            session_data = self.sessions.pop(uid)
-            buffer = session_data["buffer"]
-            all_images = session_data["images"]
-            evt = session_data["event"]
+            session = self.sessions[uid]
+            buffer = session["buffer"]
+            all_images = session["images"]
+            evt = session["event"]
 
             merged_text = self._merge_buffer(buffer)
             if not merged_text and not all_images:
+                self.sessions.pop(uid, None)
                 return
 
             logger.info(
                 f"[Premerger] 防抖结算 - 用户 {uid} | "
                 f"合并消息数: {len(buffer)} | 图片数: {len(all_images)}"
             )
+
+            session["buffer"] = []
+            session["images"] = []
+            session["llm_in_progress"] = True
+            session["interrupted"] = False
+            session["retry_count"] = 0
 
             self._reconstruct_event(evt, merged_text, all_images)
             return
