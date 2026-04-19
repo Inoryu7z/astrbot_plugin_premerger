@@ -16,7 +16,7 @@ _ZOMBIE_TIMEOUT = 60
     "astrbot_plugin_premerger",
     "Inoryu7z",
     "用户消息智能合并与中断重试：防抖收集、LLM请求中断重试",
-    "2.0.0",
+    "2.0.1",
 )
 class PremergerPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -42,7 +42,7 @@ class PremergerPlugin(Star):
         self.sessions: Dict[str, Dict[str, Any]] = {}
 
         logger.info(
-            f"[Premerger] v2.0.0 加载 | "
+            f"[Premerger] v2.0.1 加载 | "
             f"防抖: {self.debounce_time}s | "
             f"私聊: {self.enable_private_chat} | "
             f"群聊: {self.enable_group_chat} | "
@@ -114,6 +114,9 @@ class PremergerPlugin(Star):
     def _cleanup_session(self, uid: str) -> None:
         session = self.sessions.get(uid)
         if session:
+            flush_event = session.get("flush_event")
+            if flush_event and not flush_event.is_set():
+                flush_event.set()
             for task in session.get("background_tasks", []):
                 if not task.done():
                     task.cancel()
@@ -162,6 +165,13 @@ class PremergerPlugin(Star):
                     )
                     self._cleanup_session(uid)
                     return
+
+                if session.get("pending_text") and not session.get("buffer"):
+                    session["buffer"].insert(0, session["pending_text"])
+                    session["pending_text"] = ""
+                if session.get("pending_images") and not session.get("images"):
+                    session["images"] = list(session["pending_images"])
+                    session["pending_images"] = []
 
                 if text.strip():
                     session["buffer"].append(text.strip())
@@ -217,6 +227,8 @@ class PremergerPlugin(Star):
             "background_tasks": [],
             "llm_start_time": 0,
             "llm_generation": 0,
+            "pending_text": "",
+            "pending_images": [],
         }
 
         await flush_event.wait()
@@ -242,6 +254,8 @@ class PremergerPlugin(Star):
             f"合并消息数: {len(buffer)} | 图片数: {len(all_images)}"
         )
 
+        session["pending_text"] = merged_text
+        session["pending_images"] = list(all_images)
         session["buffer"] = []
         session["images"] = []
         session["llm_in_progress"] = True
@@ -279,9 +293,12 @@ class PremergerPlugin(Star):
                 f"合并消息数: {len(buffer)} | 图片数: {len(all_images)}"
             )
 
+            session["pending_text"] = merged_text
+            session["pending_images"] = list(all_images)
             session["buffer"] = []
             session["images"] = []
             session["llm_in_progress"] = True
+            session["interrupted"] = False
             session["llm_start_time"] = time.monotonic()
 
             generation = session.get("llm_generation", 0)
@@ -313,7 +330,6 @@ class PremergerPlugin(Star):
         if uid in self.sessions:
             session = self.sessions[uid]
             session["llm_in_progress"] = True
-            session["interrupted"] = False
             session["llm_start_time"] = time.monotonic()
             logger.debug(f"[Premerger] on_llm_request - 用户 {uid}")
 
@@ -324,17 +340,24 @@ class PremergerPlugin(Star):
 
         uid = event.unified_msg_origin
         if uid not in self.sessions:
+            if hasattr(resp, "completion_text"):
+                resp.completion_text = ""
+            event.stop_event()
             return
 
         session = self.sessions[uid]
 
         if session.get("interrupted"):
             logger.info(f"[Premerger] 丢弃被中断的 LLM 响应 - 用户 {uid}")
+            if hasattr(resp, "completion_text"):
+                resp.completion_text = ""
             event.stop_event()
             return
 
         session["llm_in_progress"] = False
         session["llm_start_time"] = 0
+        session["pending_text"] = ""
+        session["pending_images"] = []
 
         if session.get("buffer") and len(session["buffer"]) > 0:
             logger.info(
@@ -343,9 +366,12 @@ class PremergerPlugin(Star):
             buffer = session["buffer"]
             all_images = session["images"]
             merged_text = self._merge_buffer(buffer)
+            session["pending_text"] = merged_text
+            session["pending_images"] = list(all_images)
             session["buffer"] = []
             session["images"] = []
             session["llm_in_progress"] = True
+            session["interrupted"] = False
             session["llm_start_time"] = time.monotonic()
             generation = session.get("llm_generation", 0)
             task = asyncio.create_task(
@@ -445,6 +471,9 @@ class PremergerPlugin(Star):
                 )
                 return
 
+            session["pending_text"] = ""
+            session["pending_images"] = []
+
             if session.get("buffer") and len(session["buffer"]) > 0:
                 logger.info(
                     f"[Premerger] 直接 LLM 完成但缓冲区有残留 - 用户 {uid}"
@@ -501,7 +530,7 @@ class PremergerPlugin(Star):
                                         {"role": role, "content": content}
                                     )
         except Exception as e:
-            logger.debug(f"[Premerger] 读取对话历史失败: {e}")
+            logger.warning(f"[Premerger] 读取对话历史失败: {e}")
 
         contexts.append({"role": "user", "content": current_text})
         return contexts

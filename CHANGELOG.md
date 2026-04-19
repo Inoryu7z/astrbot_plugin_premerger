@@ -1,3 +1,15 @@
+### v2.0.1
+
+**🐛 修复中断机制多个严重 bug**
+
+* 修复 `on_llm_request` 钩子重置 `interrupted=False` 导致中断标志被清除，`on_llm_response` 永远无法拦截被中断的 LLM 响应的致命 bug。
+* 修复中断重试时原始消息丢失的问题：新增 `pending_text`/`pending_images` 机制，防抖结算时保存已发送的合并文本，中断发生时回填到 buffer 头部，确保重试请求包含完整上下文。
+* 修复 `_cleanup_session` 未设置 `flush_event` 导致 `handle_message` 协程永久挂起（死锁）的严重 bug。
+* 修复 `on_llm_response` 在 session 不存在时未调用 `stop_event()`，导致 max_retry 达上限后旧 LLM 响应泄露给用户的 bug。
+* 修复 `_debounce_then_retry` 和 `on_llm_response` 残留消息分支中 `interrupted` 标志未重置为 `False`，可能导致后续正常响应被错误拦截的问题。
+* 中断时清空 `resp.completion_text`，防止 PostSplitter 部分发送被中断的响应。
+* 改善 `_build_contexts` 错误日志级别，从 `debug` 改为 `warning`，便于排查上下文构建问题。
+
 ### v2.0.0
 
 **🔄 架构重设计：中断立即重试，不再依赖 on_llm_response 触发**
