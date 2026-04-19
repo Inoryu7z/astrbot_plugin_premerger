@@ -16,7 +16,7 @@ _ZOMBIE_TIMEOUT = 60
     "astrbot_plugin_premerger",
     "Inoryu7z",
     "用户消息智能合并与中断重试：防抖收集、LLM请求中断重试",
-    "2.0.1",
+    "2.0.2",
 )
 class PremergerPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -42,7 +42,7 @@ class PremergerPlugin(Star):
         self.sessions: Dict[str, Dict[str, Any]] = {}
 
         logger.info(
-            f"[Premerger] v2.0.1 加载 | "
+            f"[Premerger] v2.0.2 加载 | "
             f"防抖: {self.debounce_time}s | "
             f"私聊: {self.enable_private_chat} | "
             f"群聊: {self.enable_group_chat} | "
@@ -505,7 +505,11 @@ class PremergerPlugin(Star):
             logger.debug(f"[Premerger] 添加 begin_dialogs 失败: {e}")
 
         try:
-            conv_mgr = self.context.conversationManager
+            conv_mgr = getattr(self.context, "conversation_manager", None)
+            if not conv_mgr:
+                logger.debug("[Premerger] conversation_manager 不可用，跳过对话历史读取")
+                contexts.append({"role": "user", "content": current_text})
+                return contexts
             curr_cid = await conv_mgr.get_curr_conversation_id(uid)
 
             if curr_cid:
@@ -545,7 +549,10 @@ class PremergerPlugin(Star):
                 UserMessageSegment,
             )
 
-            conv_mgr = self.context.conversationManager
+            conv_mgr = getattr(self.context, "conversation_manager", None)
+            if not conv_mgr:
+                logger.debug("[Premerger] conversation_manager 不可用，跳过对话历史保存")
+                return
             curr_cid = await conv_mgr.get_curr_conversation_id(uid)
 
             if curr_cid:

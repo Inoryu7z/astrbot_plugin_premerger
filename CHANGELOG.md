@@ -1,3 +1,11 @@
+### v2.0.2
+
+**🐛 修复对话历史读写失败**
+
+* 修复 `self.context.conversationManager`（驼峰命名）不存在导致对话历史读取和保存均失败的 bug：正确属性名为 `conversation_manager`（下划线命名）。
+* 改用 `getattr(self.context, "conversation_manager", None)` 安全访问方式，兼容旧版 AstrBot。
+* 修复对话历史不可用时 `_build_contexts` 缺少当前用户消息的 fallback 处理。
+
 ### v2.0.1
 
 **🐛 修复中断机制多个严重 bug**
