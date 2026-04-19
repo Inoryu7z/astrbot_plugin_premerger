@@ -12,7 +12,7 @@ from astrbot.api.star import Context, Star, register
     "astrbot_plugin_premerger",
     "Inoryu7z",
     "用户消息智能合并与中断重试：防抖收集、LLM请求中断重试",
-    "1.0.0",
+    "1.0.1",
 )
 class PremergerPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -32,7 +32,7 @@ class PremergerPlugin(Star):
         self.sessions: Dict[str, Dict[str, Any]] = {}
 
         logger.info(
-            f"[Premerger] v1.0.0 加载 | "
+            f"[Premerger] v1.0.1 加载 | "
             f"防抖: {self.debounce_time}s | "
             f"私聊: {self.enable_private_chat} | "
             f"群聊: {self.enable_group_chat} | "
@@ -69,7 +69,11 @@ class PremergerPlugin(Star):
                 dt = session.get("debounce_task")
                 if dt and not dt.done():
                     dt.cancel()
-                    asyncio.create_task(self._start_llm_request(uid))
+                lt = session.get("llm_task")
+                if lt and not lt.done():
+                    lt.cancel()
+                self.sessions.pop(uid, None)
+                logger.info(f"[Premerger] 用户 {uid} 发送指令，清空会话缓冲区")
             return
 
         if not text.strip() and not image_urls:
