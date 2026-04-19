@@ -13,7 +13,7 @@ from astrbot.api.star import Context, Star, register
     "astrbot_plugin_premerger",
     "Inoryu7z",
     "用户消息智能合并与中断重试：防抖收集、LLM请求中断重试",
-    "1.1.1",
+    "1.2.0",
 )
 class PremergerPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -22,18 +22,24 @@ class PremergerPlugin(Star):
 
         self.enable = bool(config.get("enable", True))
         self.debounce_time = float(config.get("debounce_time", 0.5))
+        if self.debounce_time < 0:
+            logger.warning("[Premerger] debounce_time 不能为负数，已设置为 0")
+            self.debounce_time = 0
         self.merge_separator = self._parse_separator(
             config.get("merge_separator", "\\n")
         )
         self.enable_private_chat = bool(config.get("enable_private_chat", True))
         self.enable_group_chat = bool(config.get("enable_group_chat", False))
         self.max_retry_count = int(config.get("max_retry_count", 5))
+        if self.max_retry_count < 0:
+            logger.warning("[Premerger] max_retry_count 不能为负数，已设置为 0")
+            self.max_retry_count = 0
         self.command_prefixes = config.get("command_prefixes", ["/"])
 
         self.sessions: Dict[str, Dict[str, Any]] = {}
 
         logger.info(
-            f"[Premerger] v1.1.1 加载 | "
+            f"[Premerger] v1.2.0 加载 | "
             f"防抖: {self.debounce_time}s | "
             f"私聊: {self.enable_private_chat} | "
             f"群聊: {self.enable_group_chat} | "
@@ -78,7 +84,7 @@ class PremergerPlugin(Star):
 
     def _reconstruct_event(
         self, event: AstrMessageEvent, text: str, image_urls: List[str]
-    ):
+    ) -> None:
         event.message_str = text
         chain: list = []
         if text:
@@ -95,6 +101,19 @@ class PremergerPlugin(Star):
                 event.message_obj.message = chain
             except Exception as e:
                 logger.warning(f"[Premerger] 事件消息链更新失败: {e}")
+
+    def _track_task(self, uid: str, task: asyncio.Task) -> None:
+        if uid in self.sessions:
+            self.sessions[uid].setdefault("background_tasks", []).append(task)
+            task.add_done_callback(
+                lambda t, u=uid: self._untrack_task(u, t)
+            )
+
+    def _untrack_task(self, uid: str, task: asyncio.Task) -> None:
+        if uid in self.sessions:
+            tasks = self.sessions[uid].get("background_tasks", [])
+            if task in tasks:
+                tasks.remove(task)
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1)
     async def handle_message(self, event: AstrMessageEvent):
@@ -127,6 +146,31 @@ class PremergerPlugin(Star):
         if uid in self.sessions:
             session = self.sessions[uid]
 
+            if session.get("llm_in_progress"):
+                retry = session.get("retry_count", 0) + 1
+
+                if retry >= self.max_retry_count:
+                    logger.warning(
+                        f"[Premerger] 用户 {uid} 达到最大中断次数 "
+                        f"{self.max_retry_count}，放行新消息由框架处理"
+                    )
+                    session["retry_count"] = retry
+                    return
+
+                if text.strip():
+                    session["buffer"].append(text.strip())
+                if image_urls:
+                    session["images"].extend(image_urls)
+                session["event"] = event
+                session["interrupted"] = True
+                session["retry_count"] = retry
+                logger.info(
+                    f"[Premerger] LLM 请求期间收到新消息，标记中断"
+                    f"（第 {retry} 次中断）"
+                )
+                event.stop_event()
+                return
+
             if text.strip():
                 session["buffer"].append(text.strip())
             if image_urls:
@@ -136,22 +180,6 @@ class PremergerPlugin(Star):
             dt = session.get("debounce_task")
             if dt and not dt.done():
                 dt.cancel()
-
-            if session.get("llm_in_progress"):
-                session["interrupted"] = True
-                retry = session.get("retry_count", 0) + 1
-                session["retry_count"] = retry
-                logger.info(
-                    f"[Premerger] LLM 请求期间收到新消息，标记中断"
-                    f"（第 {retry} 次中断）"
-                )
-                if retry >= self.max_retry_count:
-                    logger.warning(
-                        f"[Premerger] 用户 {uid} 达到最大中断次数 "
-                        f"{self.max_retry_count}，后续消息不再中断"
-                    )
-                event.stop_event()
-                return
 
             session["debounce_task"] = asyncio.create_task(
                 self._debounce_timer(uid)
@@ -171,6 +199,7 @@ class PremergerPlugin(Star):
                 "llm_in_progress": False,
                 "interrupted": False,
                 "retry_count": 0,
+                "background_tasks": [],
             }
 
             await flush_event.wait()
@@ -195,7 +224,7 @@ class PremergerPlugin(Star):
             self._reconstruct_event(evt, merged_text, all_images)
             return
 
-    async def _debounce_timer(self, uid: str):
+    async def _debounce_timer(self, uid: str) -> None:
         try:
             await asyncio.sleep(self.debounce_time)
             if uid in self.sessions:
@@ -204,7 +233,7 @@ class PremergerPlugin(Star):
             pass
 
     @filter.on_llm_request()
-    async def on_llm_request(self, event: AstrMessageEvent, req):
+    async def on_llm_request(self, event: AstrMessageEvent, req) -> None:
         if not self.enable:
             return
 
@@ -216,7 +245,7 @@ class PremergerPlugin(Star):
             logger.debug(f"[Premerger] on_llm_request - 用户 {uid} LLM 请求开始")
 
     @filter.on_llm_response()
-    async def on_llm_response(self, event: AstrMessageEvent, resp: LLMResponse):
+    async def on_llm_response(self, event: AstrMessageEvent, resp: LLMResponse) -> None:
         if not self.enable:
             return
 
@@ -239,9 +268,10 @@ class PremergerPlugin(Star):
                 session["buffer"] = []
                 session["images"] = []
                 session["retry_count"] = 0
-                asyncio.create_task(
+                task = asyncio.create_task(
                     self._retry_llm_request(uid, merged_text, all_images, event)
                 )
+                self._track_task(uid, task)
             else:
                 self.sessions.pop(uid, None)
                 logger.debug(f"[Premerger] LLM 响应正常 - 用户 {uid}")
@@ -253,13 +283,6 @@ class PremergerPlugin(Star):
 
         session["llm_in_progress"] = False
         session["interrupted"] = False
-
-        if session["retry_count"] >= self.max_retry_count:
-            logger.warning(
-                f"[Premerger] 用户 {uid} 已达最大中断次数，放行当前响应，"
-                f"缓冲区 {len(session['buffer'])} 条消息将作为后续请求处理"
-            )
-            return
 
         buffer = session["buffer"]
         all_images = session["images"]
@@ -281,9 +304,10 @@ class PremergerPlugin(Star):
         session["images"] = []
         session["retry_count"] = 0
 
-        asyncio.create_task(
+        task = asyncio.create_task(
             self._retry_llm_request(uid, merged_text, all_images, event)
         )
+        self._track_task(uid, task)
 
     async def _retry_llm_request(
         self,
@@ -291,7 +315,7 @@ class PremergerPlugin(Star):
         merged_text: str,
         image_urls: List[str],
         original_event: AstrMessageEvent,
-    ):
+    ) -> None:
         try:
             provider = self.context.get_using_provider(uid)
             if not provider:
@@ -307,8 +331,8 @@ class PremergerPlugin(Star):
                 )
                 system_prompt = persona.get("prompt", "")
                 begin_dialogs = persona.get("_begin_dialogs_processed", [])
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[Premerger] 获取 persona 失败: {e}")
 
             contexts = await self._build_contexts(uid, merged_text, begin_dialogs)
 
@@ -353,8 +377,8 @@ class PremergerPlugin(Star):
         try:
             if begin_dialogs:
                 contexts.extend(begin_dialogs)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[Premerger] 添加 begin_dialogs 失败: {e}")
 
         try:
             conv_mgr = self.context.conversation_manager
@@ -369,7 +393,8 @@ class PremergerPlugin(Star):
 
                         try:
                             history = json.loads(history)
-                        except Exception:
+                        except Exception as e:
+                            logger.warning(f"[Premerger] 对话历史 JSON 解析失败: {e}")
                             history = []
                     if isinstance(history, list):
                         for msg in history:
@@ -388,7 +413,7 @@ class PremergerPlugin(Star):
 
     async def _save_conversation(
         self, uid: str, user_text: str, assistant_text: str
-    ):
+    ) -> None:
         try:
             from astrbot.core.agent.message import (
                 AssistantMessageSegment,
@@ -413,10 +438,13 @@ class PremergerPlugin(Star):
         except Exception as e:
             logger.warning(f"[Premerger] 保存对话历史失败: {e}")
 
-    async def terminate(self):
+    async def terminate(self) -> None:
         for uid, session in list(self.sessions.items()):
             dt = session.get("debounce_task")
             if dt and not dt.done():
                 dt.cancel()
+            for task in session.get("background_tasks", []):
+                if not task.done():
+                    task.cancel()
         self.sessions.clear()
         logger.info("[Premerger] 插件已卸载，所有会话已清理")
