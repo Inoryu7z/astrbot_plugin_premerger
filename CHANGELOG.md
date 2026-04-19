@@ -1,3 +1,11 @@
+### v2.0.3
+
+**🐛 修复图片/表情包丢失问题**
+
+* 修复 `pending_images` 回填条件错误：空列表 `[]` 的布尔值为 `False`，导致中断时图片无法从 `pending_images` 回填到 `images`，改用 `"pending_images" in session` 检查。
+* 修复 `_save_conversation` 不保存图片信息：现在用户消息中会包含 `ImagePart`，图片对话历史不再丢失。
+* 修复 `_build_contexts` 在纯图片消息（无文本）时追加空 user 消息的问题：`merged_text` 为空时不再追加。
+
 ### v2.0.2
 
 **🐛 修复对话历史读写失败**

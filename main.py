@@ -16,7 +16,7 @@ _ZOMBIE_TIMEOUT = 60
     "astrbot_plugin_premerger",
     "Inoryu7z",
     "用户消息智能合并与中断重试：防抖收集、LLM请求中断重试",
-    "2.0.2",
+    "2.0.3",
 )
 class PremergerPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -42,7 +42,7 @@ class PremergerPlugin(Star):
         self.sessions: Dict[str, Dict[str, Any]] = {}
 
         logger.info(
-            f"[Premerger] v2.0.2 加载 | "
+            f"[Premerger] v2.0.3 加载 | "
             f"防抖: {self.debounce_time}s | "
             f"私聊: {self.enable_private_chat} | "
             f"群聊: {self.enable_group_chat} | "
@@ -169,7 +169,7 @@ class PremergerPlugin(Star):
                 if session.get("pending_text") and not session.get("buffer"):
                     session["buffer"].insert(0, session["pending_text"])
                     session["pending_text"] = ""
-                if session.get("pending_images") and not session.get("images"):
+                if "pending_images" in session and not session.get("images"):
                     session["images"] = list(session["pending_images"])
                     session["pending_images"] = []
 
@@ -459,7 +459,7 @@ class PremergerPlugin(Star):
 
             await original_event.send(original_event.plain_result(reply_text))
 
-            await self._save_conversation(uid, merged_text, reply_text)
+            await self._save_conversation(uid, merged_text, reply_text, image_urls)
 
             session = self.sessions.get(uid)
             if not session:
@@ -508,7 +508,8 @@ class PremergerPlugin(Star):
             conv_mgr = getattr(self.context, "conversation_manager", None)
             if not conv_mgr:
                 logger.debug("[Premerger] conversation_manager 不可用，跳过对话历史读取")
-                contexts.append({"role": "user", "content": current_text})
+                if current_text:
+                    contexts.append({"role": "user", "content": current_text})
                 return contexts
             curr_cid = await conv_mgr.get_curr_conversation_id(uid)
 
@@ -536,15 +537,17 @@ class PremergerPlugin(Star):
         except Exception as e:
             logger.warning(f"[Premerger] 读取对话历史失败: {e}")
 
-        contexts.append({"role": "user", "content": current_text})
+        if current_text:
+            contexts.append({"role": "user", "content": current_text})
         return contexts
 
     async def _save_conversation(
-        self, uid: str, user_text: str, assistant_text: str
+        self, uid: str, user_text: str, assistant_text: str, image_urls: List[str] = None
     ) -> None:
         try:
             from astrbot.core.agent.message import (
                 AssistantMessageSegment,
+                ImagePart,
                 TextPart,
                 UserMessageSegment,
             )
@@ -556,7 +559,18 @@ class PremergerPlugin(Star):
             curr_cid = await conv_mgr.get_curr_conversation_id(uid)
 
             if curr_cid:
-                user_msg = UserMessageSegment(content=[TextPart(text=user_text)])
+                user_content: list = []
+                if user_text:
+                    user_content.append(TextPart(text=user_text))
+                if image_urls:
+                    for url in image_urls:
+                        try:
+                            user_content.append(ImagePart(url=url))
+                        except Exception:
+                            user_content.append(ImagePart(file=url))
+                if not user_content:
+                    user_content.append(TextPart(text=""))
+                user_msg = UserMessageSegment(content=user_content)
                 assistant_msg = AssistantMessageSegment(
                     content=[TextPart(text=assistant_text)]
                 )
