@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 import traceback
 from typing import Any, Dict, List
@@ -273,6 +274,13 @@ class PremergerPlugin(Star):
                 self.sessions[uid]["flush_event"].set()
         except asyncio.CancelledError:
             pass
+        except Exception as e:
+            logger.error(f"[Premerger] 防抖定时器异常: {e}")
+            if uid in self.sessions:
+                try:
+                    self.sessions[uid]["flush_event"].set()
+                except Exception:
+                    self.sessions.pop(uid, None)
 
     async def _debounce_then_retry(self, uid: str) -> None:
         try:
@@ -314,6 +322,9 @@ class PremergerPlugin(Star):
             )
         except asyncio.CancelledError:
             pass
+        except Exception as e:
+            logger.error(f"[Premerger] 中断重试防抖异常 - 用户 {uid}: {e}")
+            self.sessions.pop(uid, None)
 
     def _remove_task(self, uid: str, task: asyncio.Task) -> None:
         if uid in self.sessions:
@@ -426,7 +437,7 @@ class PremergerPlugin(Star):
             except Exception as e:
                 logger.debug(f"[Premerger] 获取 persona 失败: {e}")
 
-            contexts = await self._build_contexts(uid, merged_text, begin_dialogs)
+            contexts = await self._build_contexts(uid, begin_dialogs)
 
             logger.info(
                 f"[Premerger] 直接 LLM 请求 - 用户 {uid} | "
@@ -458,6 +469,13 @@ class PremergerPlugin(Star):
                 return
 
             await original_event.send(original_event.plain_result(reply_text))
+
+            session = self.sessions.get(uid)
+            if not session or session.get("llm_generation", 0) != generation:
+                logger.info(
+                    f"[Premerger] 发送后代际已变，跳过保存 - 用户 {uid}"
+                )
+                return
 
             await self._save_conversation(uid, merged_text, reply_text, image_urls)
 
@@ -494,7 +512,7 @@ class PremergerPlugin(Star):
             self.sessions.pop(uid, None)
 
     async def _build_contexts(
-        self, uid: str, current_text: str, begin_dialogs: list
+        self, uid: str, begin_dialogs: list
     ) -> list:
         contexts: list = []
 
@@ -508,8 +526,6 @@ class PremergerPlugin(Star):
             conv_mgr = getattr(self.context, "conversation_manager", None)
             if not conv_mgr:
                 logger.debug("[Premerger] conversation_manager 不可用，跳过对话历史读取")
-                if current_text:
-                    contexts.append({"role": "user", "content": current_text})
                 return contexts
             curr_cid = await conv_mgr.get_curr_conversation_id(uid)
 
@@ -518,8 +534,6 @@ class PremergerPlugin(Star):
                 if conversation and hasattr(conversation, "history"):
                     history = conversation.history
                     if isinstance(history, str):
-                        import json
-
                         try:
                             history = json.loads(history)
                         except Exception as e:
@@ -537,8 +551,6 @@ class PremergerPlugin(Star):
         except Exception as e:
             logger.warning(f"[Premerger] 读取对话历史失败: {e}")
 
-        if current_text:
-            contexts.append({"role": "user", "content": current_text})
         return contexts
 
     async def _save_conversation(
