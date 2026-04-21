@@ -1,3 +1,12 @@
+### v2.0.4
+
+**🐛 修复多个严重 bug**
+
+* 修复僵尸会话清理后消息丢失：`_cleanup_session` 后缺少 `return`，代码穿透导致消息被 `stop_event()` 吞掉。
+* 修复 `on_llm_response` 对无 session 用户清空 LLM 响应：发送指令的用户、群聊未启用的用户的 LLM 回复被静默吞掉。
+* 修复 `_debounce_then_retry` 过早清除 `interrupted` 标志：可能导致原始 LLM 响应未被丢弃，用户收到重复回复。
+* 修复 `on_llm_response` 丢弃中断响应后未重置状态：`interrupted` 永远为 `True`，后续正常响应可能被误判为中断而丢弃。
+
 ### v2.0.3
 
 **🐛 修复图片/表情包丢失问题**

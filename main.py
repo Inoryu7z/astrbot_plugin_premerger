@@ -17,7 +17,7 @@ _ZOMBIE_TIMEOUT = 60
     "astrbot_plugin_premerger",
     "Inoryu7z",
     "用户消息智能合并与中断重试：防抖收集、LLM请求中断重试",
-    "2.0.3",
+    "2.0.4",
 )
 class PremergerPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -43,7 +43,7 @@ class PremergerPlugin(Star):
         self.sessions: Dict[str, Dict[str, Any]] = {}
 
         logger.info(
-            f"[Premerger] v2.0.3 加载 | "
+            f"[Premerger] v2.0.4 加载 | "
             f"防抖: {self.debounce_time}s | "
             f"私聊: {self.enable_private_chat} | "
             f"群聊: {self.enable_group_chat} | "
@@ -156,6 +156,7 @@ class PremergerPlugin(Star):
             if self._is_session_zombie(session):
                 logger.warning(f"[Premerger] 用户 {uid} 会话超时，强制清理")
                 self._cleanup_session(uid)
+                return
             elif session.get("llm_in_progress"):
                 retry = session.get("retry_count", 0) + 1
 
@@ -306,7 +307,6 @@ class PremergerPlugin(Star):
             session["buffer"] = []
             session["images"] = []
             session["llm_in_progress"] = True
-            session["interrupted"] = False
             session["llm_start_time"] = time.monotonic()
 
             generation = session.get("llm_generation", 0)
@@ -351,9 +351,6 @@ class PremergerPlugin(Star):
 
         uid = event.unified_msg_origin
         if uid not in self.sessions:
-            if hasattr(resp, "completion_text"):
-                resp.completion_text = ""
-            event.stop_event()
             return
 
         session = self.sessions[uid]
@@ -362,6 +359,13 @@ class PremergerPlugin(Star):
             logger.info(f"[Premerger] 丢弃被中断的 LLM 响应 - 用户 {uid}")
             if hasattr(resp, "completion_text"):
                 resp.completion_text = ""
+            session["interrupted"] = False
+            has_active_bg = any(
+                not t.done() for t in session.get("background_tasks", [])
+            )
+            if not has_active_bg:
+                session["llm_in_progress"] = False
+                session["llm_start_time"] = 0
             event.stop_event()
             return
 
