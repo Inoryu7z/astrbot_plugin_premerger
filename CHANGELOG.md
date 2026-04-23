@@ -1,3 +1,15 @@
+### v2.0.5
+
+**🐛 修复消息丢失致命 bug & 增强失败恢复**
+
+* 修复 `_direct_llm_call` 失败时 `sessions.pop()` 销毁整个会话导致所有合并消息丢失的致命 bug：现在调用 `_reset_session_for_retry` 将消息放回缓冲区，等待新消息触发时走框架管道（享受框架 fallback 机制）。
+* 修复 `_direct_llm_call` 返回空响应时直接销毁会话的问题：现在将消息放回缓冲区等待恢复，不再重试主模型（避免越权绕过框架 fallback、加剧限流风险）。
+* 修复 `_direct_llm_call` 获取 provider 失败时直接销毁会话的问题：现在将消息放回缓冲区等待恢复。
+* 新增 `_reset_session_for_retry` 方法：将合并消息安全放回缓冲区，保留 `interrupted` 标志防止被中断的原始 LLM 响应泄露。
+* 修复条件判断不一致：统一使用 `session.get()` 替代混用的 `"key" in session` 模式。
+* 修复 KeyError 风险：`pending_text`/`pending_images` 回填时使用 `setdefault` 确保 `buffer`/`images` 键存在。
+* 提取 `__version__` 常量，消除版本号硬编码重复。
+
 ### v2.0.4
 
 **🐛 修复多个严重 bug**

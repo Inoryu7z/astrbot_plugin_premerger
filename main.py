@@ -1,7 +1,6 @@
 import asyncio
 import json
 import time
-import traceback
 from typing import Any, Dict, List
 
 from astrbot.api import AstrBotConfig, logger
@@ -11,13 +10,14 @@ from astrbot.api.provider import LLMResponse
 from astrbot.api.star import Context, Star, register
 
 _ZOMBIE_TIMEOUT = 60
+__version__ = "2.0.5"
 
 
 @register(
     "astrbot_plugin_premerger",
     "Inoryu7z",
     "用户消息智能合并与中断重试：防抖收集、LLM请求中断重试",
-    "2.0.4",
+    __version__,
 )
 class PremergerPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -43,7 +43,7 @@ class PremergerPlugin(Star):
         self.sessions: Dict[str, Dict[str, Any]] = {}
 
         logger.info(
-            f"[Premerger] v2.0.4 加载 | "
+            f"[Premerger] v{__version__} 加载 | "
             f"防抖: {self.debounce_time}s | "
             f"私聊: {self.enable_private_chat} | "
             f"群聊: {self.enable_group_chat} | "
@@ -126,6 +126,20 @@ class PremergerPlugin(Star):
                 dt.cancel()
             self.sessions.pop(uid, None)
 
+    def _reset_session_for_retry(self, uid: str, merged_text: str, image_urls: List[str]) -> None:
+        session = self.sessions.get(uid)
+        if not session:
+            return
+        session["buffer"] = [merged_text] if merged_text else []
+        session["images"] = list(image_urls) if image_urls else []
+        session["llm_in_progress"] = False
+        session["llm_start_time"] = 0
+        session["pending_text"] = ""
+        session["pending_images"] = []
+        logger.info(
+            f"[Premerger] 已将合并消息放回缓冲区，等待新消息触发重试 - 用户 {uid}"
+        )
+
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1)
     async def handle_message(self, event: AstrMessageEvent):
         if not self.enable:
@@ -169,10 +183,10 @@ class PremergerPlugin(Star):
                     return
 
                 if session.get("pending_text") and not session.get("buffer"):
-                    session["buffer"].insert(0, session["pending_text"])
+                    session.setdefault("buffer", []).insert(0, session["pending_text"])
                     session["pending_text"] = ""
-                if "pending_images" in session and not session.get("images"):
-                    session["images"] = list(session["pending_images"])
+                if session.get("pending_images") and not session.get("images"):
+                    session.setdefault("images", []).extend(session["pending_images"])
                     session["pending_images"] = []
 
                 if text.strip():
@@ -209,11 +223,53 @@ class PremergerPlugin(Star):
             if old_dt and not old_dt.done():
                 old_dt.cancel()
 
+            flush_event = session.get("flush_event")
+            if flush_event:
+                flush_event.clear()
+
             session["debounce_task"] = asyncio.create_task(
                 self._debounce_timer(uid)
             )
-            event.stop_event()
-            return
+
+            if flush_event:
+                await flush_event.wait()
+
+                if uid not in self.sessions:
+                    return
+
+                session = self.sessions[uid]
+                if session.get("llm_in_progress"):
+                    event.stop_event()
+                    return
+
+                buffer = session["buffer"]
+                all_images = session["images"]
+                evt = session["event"]
+
+                merged_text = self._merge_buffer(buffer)
+                if not merged_text and not all_images:
+                    self.sessions.pop(uid, None)
+                    return
+
+                logger.info(
+                    f"[Premerger] 防抖结算 - 用户 {uid} | "
+                    f"合并消息数: {len(buffer)} | 图片数: {len(all_images)}"
+                )
+
+                session["pending_text"] = merged_text
+                session["pending_images"] = list(all_images)
+                session["buffer"] = []
+                session["images"] = []
+                session["llm_in_progress"] = True
+                session["interrupted"] = False
+                session["retry_count"] = 0
+                session["llm_start_time"] = time.monotonic()
+
+                self._reconstruct_event(evt, merged_text, all_images)
+                return
+            else:
+                event.stop_event()
+                return
 
         flush_event = asyncio.Event()
         debounce_task = asyncio.create_task(self._debounce_timer(uid))
@@ -423,13 +479,15 @@ class PremergerPlugin(Star):
         original_event: AstrMessageEvent,
         generation: int,
     ) -> None:
-        try:
-            provider = self.context.get_using_provider(uid)
-            if not provider:
-                logger.error("[Premerger] 无法获取 AI 提供商")
-                self.sessions.pop(uid, None)
-                return
+        provider = self.context.get_using_provider(uid)
+        if not provider:
+            logger.error("[Premerger] 无法获取 AI 提供商，将消息放回缓冲区")
+            session = self.sessions.get(uid)
+            if session and session.get("llm_generation", 0) == generation:
+                self._reset_session_for_retry(uid, merged_text, image_urls)
+            return
 
+        try:
             system_prompt = ""
             begin_dialogs: list = []
             try:
@@ -468,8 +526,10 @@ class PremergerPlugin(Star):
                 return
 
             if not reply_text:
-                logger.warning(f"[Premerger] 直接 LLM 返回为空 - 用户 {uid}")
-                self.sessions.pop(uid, None)
+                logger.warning(
+                    f"[Premerger] 直接 LLM 返回为空，将消息放回缓冲区 - 用户 {uid}"
+                )
+                self._reset_session_for_retry(uid, merged_text, image_urls)
                 return
 
             await original_event.send(original_event.plain_result(reply_text))
@@ -510,10 +570,10 @@ class PremergerPlugin(Star):
         except asyncio.CancelledError:
             logger.debug(f"[Premerger] 直接 LLM 被取消 - 用户 {uid}")
         except Exception as e:
-            logger.error(
-                f"[Premerger] 直接 LLM 失败: {e}\n{traceback.format_exc()}"
-            )
-            self.sessions.pop(uid, None)
+            logger.error(f"[Premerger] 直接 LLM 失败，将消息放回缓冲区 - 用户 {uid}: {e}")
+            session = self.sessions.get(uid)
+            if session and session.get("llm_generation", 0) == generation:
+                self._reset_session_for_retry(uid, merged_text, image_urls)
 
     async def _build_contexts(
         self, uid: str, begin_dialogs: list
