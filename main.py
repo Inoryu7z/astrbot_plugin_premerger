@@ -10,7 +10,7 @@ from astrbot.api.provider import LLMResponse
 from astrbot.api.star import Context, Star, register
 
 _ZOMBIE_TIMEOUT = 60
-__version__ = "2.0.5"
+__version__ = "2.0.6"
 
 
 @register(
@@ -623,7 +623,7 @@ class PremergerPlugin(Star):
         try:
             from astrbot.core.agent.message import (
                 AssistantMessageSegment,
-                ImagePart,
+                ImageURLPart,
                 TextPart,
                 UserMessageSegment,
             )
@@ -640,10 +640,7 @@ class PremergerPlugin(Star):
                     user_content.append(TextPart(text=user_text))
                 if image_urls:
                     for url in image_urls:
-                        try:
-                            user_content.append(ImagePart(url=url))
-                        except Exception:
-                            user_content.append(ImagePart(file=url))
+                        user_content.append(ImageURLPart(image_url=ImageURLPart.ImageURL(url=url)))
                 if not user_content:
                     user_content.append(TextPart(text=""))
                 user_msg = UserMessageSegment(content=user_content)
