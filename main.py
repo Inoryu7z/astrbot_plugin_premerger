@@ -95,11 +95,9 @@ class PremergerPlugin(Star):
             chain.append(Plain(text=text))
         for url in image_urls:
             try:
+                chain.append(Image.fromURL(url))
+            except Exception:
                 chain.append(Image(file=url))
-            except TypeError:
-                chain.append(Image(url=url))
-            except Exception as e:
-                logger.warning(f"[Premerger] 图片组件添加失败: {url}, 错误: {e}")
         if hasattr(event.message_obj, "message"):
             try:
                 event.message_obj.message = chain

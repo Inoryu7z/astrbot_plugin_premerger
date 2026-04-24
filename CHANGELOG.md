@@ -1,9 +1,10 @@
 ### v2.0.6
 
-**🐛 修复对话历史保存失败**
+**🐛 修复对话历史保存失败 & 图片构造方式错误**
 
 * 修复 `_save_conversation` 中 `ImagePart` 导入错误：AstrBot 框架中不存在 `ImagePart`，正确类名为 `ImageURLPart`。
 * 修复图片消息构造方式：`ImagePart(url=url)` / `ImagePart(file=url)` 改为 `ImageURLPart(image_url=ImageURLPart.ImageURL(url=url))`，与框架 API 对齐。
+* 修复 `_reconstruct_event` 中 `Image(url=url)` 构造方式：`Image` 构造函数参数为 `file` 而非 `url`，`Image(url=url)` 会导致 `file` 字段为空、图片丢失。改为优先使用 `Image.fromURL(url)`，fallback 使用 `Image(file=url)`。
 
 ### v2.0.5
 
