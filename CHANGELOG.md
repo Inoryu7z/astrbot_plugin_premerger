@@ -1,3 +1,15 @@
+### v2.0.7
+
+**🛡️ 稳定性优化修复**
+
+* 修复 `_reset_session_for_retry` 放回缓冲区后无主动触发机制导致消息永远卡住的问题：现在自动调度延迟重试定时器（5s），不再依赖用户发送新消息。
+* 新增 `stuck_retry_count` 连续失败计数器：直接 LLM 调用连续失败超过 3 次后放弃消息，避免无限重试循环。
+* 修复 `after_message_sent` 清理条件不完整可能提前销毁会话的问题：现在综合检查 `llm_in_progress`、`debounce_task`、`buffer`、`images` 等状态，确保有未完成工作时不会误清理。
+* 修复 `on_llm_response` 中断处理未检查 `debounce_task` 活跃状态的问题：现在同时检查 `background_tasks` 和 `debounce_task`，避免中断重试的防抖定时器仍在运行时错误重置 `llm_in_progress`。
+* 新增主动僵尸会话清理定时器：每 30 秒扫描一次，不再依赖用户发消息才触发被动检测。
+* 修复 `_build_contexts` 无截断可能因对话历史过长导致 token 超限无限重试的问题：现在限制最近 20 条对话历史。
+* 修复 `command_prefixes` 配置为字符串时逐字符遍历导致指令识别异常的问题：现在强制转换为字符串列表。
+
 ### v2.0.6
 
 **🐛 修复对话历史保存失败 & 图片构造方式错误**
