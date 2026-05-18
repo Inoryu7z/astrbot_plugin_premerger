@@ -14,7 +14,7 @@ _STUCK_RETRY_DELAY = 5
 _ZOMBIE_CHECK_INTERVAL = 30
 _MAX_CONTEXT_MESSAGES = 20
 _MAX_STUCK_RETRIES = 3
-__version__ = "2.0.7"
+__version__ = "2.0.8"
 
 
 @register(
@@ -222,7 +222,17 @@ class PremergerPlugin(Star):
             return
 
         uid = event.unified_msg_origin
-        text = event.message_str or ""
+
+        text = ""
+        message_obj = getattr(event, "message_obj", None)
+        if message_obj:
+            text = getattr(message_obj, "message_str", "") or ""
+        if not text:
+            try:
+                text = event.get_message_outline() or ""
+            except Exception:
+                text = event.message_str or ""
+
         image_urls = self._extract_image_urls(event)
 
         if self._is_command(text):

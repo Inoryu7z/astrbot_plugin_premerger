@@ -1,3 +1,9 @@
+### v2.0.8
+
+**🐛 修复指令检测失效**
+
+* 修复 `/` 开头指令消息未被正确跳过的问题：`handle_message` 中消息文本读取方式从 `event.message_str` 改为优先使用 `message_obj.message_str`，回退链为 `get_message_outline()` → `event.message_str`（参考 postsplitter 的做法）。根因是 `event.message_str` 在某些平台适配器中与 `message_obj.message_str` 不一致，导致 `_is_command` 无法正确检测指令前缀。
+
 ### v2.0.7
 
 **🛡️ 稳定性优化修复**
