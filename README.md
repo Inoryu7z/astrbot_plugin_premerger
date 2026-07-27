@@ -82,15 +82,13 @@
 
 ## 🛠️ 主要配置项
 
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `enable` | 是否启用前处理合并器 | `true` |
-| `debounce_time` | 防抖等待时间（秒），设为 0 则不做防抖 | `0.5` |
-| `merge_separator` | 消息合并分隔符 | `\n`（换行符） |
-| `enable_private_chat` | 是否在私聊中启用 | `true` |
-| `enable_group_chat` | 是否在群聊中启用 | `false` |
-| `max_retry_count` | 单次对话最大中断重试次数 | `5` |
-| `command_prefixes` | 指令前缀列表，这些消息不参与合并 | `["/"]` |
+所有配置项均可在 AstrBot 配置界面直接修改。
+
+- `debounce_time` — 防抖等待时间（秒），设为 0 则立即发起请求不做防抖（默认 `0.5`）
+- `merge_separator` — 多条消息合并时使用的分隔符（默认 `\n` 换行符）
+- `enable_private_chat` / `enable_group_chat` — 是否在私聊 / 群聊中启用（默认私聊开、群聊关，群聊按用户隔离）
+- `max_retry_count` — 单次对话最大中断重试次数，达到上限后放行当前请求（默认 `5`）
+- `command_prefixes` — 指令前缀列表，匹配的消息不参与合并，直接放行（默认 `["/"]`）
 
 ---
 
